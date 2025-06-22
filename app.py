@@ -24,7 +24,12 @@ CUR_STREAM = {
 # Chrome setup with memory optimization
 def create_driver():
     chrome_options = webdriver.ChromeOptions()
-    chrome_options.binary_location = "/usr/lib/chromium-browser/chromedriver"
+    # NOTE: binary_location should point to the Chromium browser, NOT chromedriver
+    # Remove or fix this line:
+    # chrome_options.binary_location = "/usr/lib/chromium-browser/chromedriver"
+    # Instead, if you want to specify chromium browser binary, it would be something like:
+    # chrome_options.binary_location = "/usr/bin/chromium-browser"
+
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -36,7 +41,9 @@ def create_driver():
     chrome_options.add_argument("--window-size=800x600")
 
     chrome_options.page_load_strategy = 'eager'
-    return webdriver.Chrome(options=chrome_options, executable_path='/usr/lib/chromium-browser/chromedriver')
+
+    service = Service('/usr/lib/chromium-browser/chromedriver')
+    return webdriver.Chrome(service=service, options=chrome_options)
 
 # Faster text extraction
 def extract_clean_text(driver):
