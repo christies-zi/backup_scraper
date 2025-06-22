@@ -25,8 +25,8 @@ CUR_STREAM = {
 
 # Chrome setup with memory optimization
 def create_driver():
-    chrome_options = webdriver.ChromeOptions()
-    chrome_options.binary_location = "/usr/bin/chromium-browser"  # or /usr/bin/chromium if that's what you have
+    chrome_options = Options()
+    chrome_options.binary_location = "/usr/bin/chromium-browser"  # or /usr/bin/chromium
 
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
@@ -40,6 +40,8 @@ def create_driver():
     chrome_options.page_load_strategy = 'eager'
 
     service = Service('/usr/lib/chromium-browser/chromedriver')
+
+    # Tell Selenium this is Chromium, not Chrome
     return webdriver.Chrome(service=service, options=chrome_options)
 
 # Faster text extraction
