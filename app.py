@@ -312,9 +312,13 @@ def get_results():
 # Register cleanup function
 atexit.register(cleanup_drivers)
 
+@app.before_request
+def start_background_threads():
+    initialize_driver_pool() 
+    print("INITIALISED")
+
 if __name__ == '__main__':
     # Initialize pool before starting the server
-    initialize_driver_pool()
     
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
