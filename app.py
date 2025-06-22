@@ -14,8 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-import concurrent.futures
-from urllib.parse import urlparse
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/get_results": {"origins": "*"}})
@@ -25,184 +24,87 @@ CUR_STREAM = {
     'lock': threading.Lock()
 }
 
-# Enhanced Chrome setup with aggressive memory optimization
+# Chrome setup with memory optimization
 def create_driver():
     chrome_options = Options()
-    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    chrome_options.binary_location = "/usr/bin/chromium-browser"  # or /usr/bin/chromium
 
-    # Aggressive performance optimizations
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--js-flags=--max_old_space_size=50")  # Reduced from 100
+    chrome_options.add_argument("--js-flags=--max_old_space_size=100")
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-plugins")
-    chrome_options.add_argument("--disable-images")
-    chrome_options.add_argument("--disable-javascript")  # Major speedup if JS not needed
-    chrome_options.add_argument("--disable-css")
-    chrome_options.add_argument("--disable-web-security")
-    chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-    chrome_options.add_argument("--disable-background-timer-throttling")
-    chrome_options.add_argument("--disable-renderer-backgrounding")
-    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-    chrome_options.add_argument("--disable-client-side-phishing-detection")
-    chrome_options.add_argument("--disable-sync")
-    chrome_options.add_argument("--disable-translate")
-    chrome_options.add_argument("--hide-scrollbars")
-    chrome_options.add_argument("--mute-audio")
-    chrome_options.add_argument("--no-first-run")
-    chrome_options.add_argument("--disable-default-apps")
-    chrome_options.add_argument("--disable-background-networking")
-    chrome_options.add_argument("--window-size=400x300")  # Smaller window
-    chrome_options.page_load_strategy = 'none'  # Don't wait for full page load
-
-    # Prefs for additional speed
-    prefs = {
-        "profile.default_content_setting_values": {
-            "images": 2,  # Block images
-            "plugins": 2,  # Block plugins
-            "popups": 2,  # Block popups
-            "geolocation": 2,  # Block location sharing
-            "notifications": 2,  # Block notifications
-            "media_stream": 2,  # Block media stream
-        },
-        "profile.managed_default_content_settings": {
-            "images": 2
-        }
-    }
-    chrome_options.add_experimental_option("prefs", prefs)
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+    chrome_options.add_argument("--window-size=800x600")
+    chrome_options.page_load_strategy = 'eager'
 
     service = Service('/usr/lib/chromium-browser/chromedriver')
+
+    # Tell Selenium this is Chromium, not Chrome
     return webdriver.Chrome(service=service, options=chrome_options)
 
-# Parallel link resolution
-def resolve_bing_links_parallel(driver, links):
-    """Resolve multiple Bing redirect links in parallel using tabs"""
-    clean_links = []
-    
-    # Open all links in separate tabs first
-    for link in links:
-        driver.execute_script("window.open(arguments[0]);", link)
-    
-    # Now resolve all the URLs
-    for i, link in enumerate(links, 1):  # Start from 1 since 0 is the original tab
-        try:
-            driver.switch_to.window(driver.window_handles[i])
-            time.sleep(0.5)  # Minimal wait
-            clean_links.append(driver.current_url)
-        except:
-            clean_links.append(link)  # Fallback to original if error
-    
-    # Close all tabs except the first one
-    while len(driver.window_handles) > 1:
-        driver.switch_to.window(driver.window_handles[-1])
-        driver.close()
-    
-    driver.switch_to.window(driver.window_handles[0])
-    return clean_links
+def get_clean_bing_links(driver, link):
+    driver.execute_script("window.open(arguments[0]);", link)  # Open link in new tab
+    driver.switch_to.window(driver.window_handles[-1])  # Switch to new tab
+    time.sleep(3)  # Allow the redirect to complete
+    clean_link = driver.current_url  # Get final resolved URL
+    driver.close()  # Close the new tab
+    driver.switch_to.window(driver.window_handles[0])  # Switch back to main tab
+    return clean_link
 
-# Optimized text extraction with early termination
-def extract_clean_text_fast(driver, sentence_cleaned, max_chars=4000):
-    """Extract text with early termination if sentence found"""
-    try:
-        # Use faster selector and limit elements
-        elements = driver.find_elements(By.CSS_SELECTOR, "p, blockquote, li")[:20]  # Limit to first 20 elements
-        
-        text_parts = []
-        current_length = 0
-        
-        for el in elements:
-            if current_length >= max_chars:
-                break
-                
-            text = el.text.strip()
-            if text:
-                # Check if we found the sentence we're looking for
-                if sentence_cleaned in text:
-                    return ""  # Return empty if sentence found (duplicate content)
-                
-                text_parts.append(text)
-                current_length += len(text)
-        
-        return " ".join(text_parts)[:max_chars]
-    except:
-        return ""
 
-# Enhanced lightweight scraping with better error handling
-def scrape_with_requests_fast(url, sentence_cleaned, timeout=5):
-    """Faster requests-based scraping with shorter timeout"""
+# Faster text extraction
+def extract_clean_text(driver):
+    elements = driver.find_elements(By.CSS_SELECTOR, "p, blockquote")
+    list_elements = driver.find_element(By.CSS_SELECTOR, "li")
+    combined = " ".join(el.text.strip() for el in elements + list_elements if el.text.strip())
+    return combined[:4000]  # Slice only once at the end
+
+# Lightweight alternative using BeautifulSoup
+def scrape_with_requests(url, sentence_cleaned):
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
-        
-        # Read only first chunk for speed
-        content = ""
-        for chunk in response.iter_content(chunk_size=8192, decode_unicode=True):
-            content += chunk
-            if len(content) > 50000:  # Stop after 50KB
-                break
-        
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # Remove unwanted elements for speed
-        for element in soup(['script', 'style', 'nav', 'footer', 'header']):
-            element.decompose()
-        
-        # Fast text extraction
-        text_elements = soup.find_all(['p', 'blockquote', 'li'], limit=15)  # Limit elements
-        text_parts = []
-        
-        for elem in text_elements:
-            text = elem.get_text(strip=True)
-            if text and len(text) > 20:  # Skip very short texts
-                if sentence_cleaned in text:
-                    return {"clean_link": "", "text_cleaned": ""}  # Skip if duplicate
-                text_parts.append(text)
-        
-        combined_text = '\n'.join(text_parts)[:4000]
-        
-        return {"clean_link": url, "text_cleaned": combined_text} if combined_text else {"clean_link": "", "text_cleaned": ""}
-        
-    except Exception as e:
-        print(f"Error scraping {url}: {e}")
-        return {"clean_link": "", "text_cleaned": ""}
+        # Extract text from relevant elements
+        paragraphs = soup.find_all(['p', 'blockquote']) 
+        less_important_stuff = soup.find_all(['li', 'blockquote'])
+        elements_split = []
 
-# Parallel processing of multiple URLs
-def process_urls_parallel(urls, sentence_cleaned, use_lightweight=True, max_workers=3):
-    """Process multiple URLs in parallel"""
-    results = []
-    
-    if use_lightweight:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_url = {
-                executor.submit(scrape_with_requests_fast, url, sentence_cleaned): url 
-                for url in urls
-            }
+        for elem in paragraphs + less_important_stuff:
+            for br in elem.find_all("br"):
+                br.replace_with("\n")
             
-            for future in concurrent.futures.as_completed(future_to_url, timeout=10):
-                try:
-                    result = future.result(timeout=5)
-                    results.append(result)
-                except:
-                    results.append({"clean_link": "", "text_cleaned": ""})
-    
-    return results
+            lines = elem.text.split('\n')
+            clean_lines = '\n'.join([line.strip() for line in lines if line.strip()])
+            elements_split.append(clean_lines)
+
+        text = '\n'.join([e.strip() for e in elements_split if e.strip()])[:4000]
+
+        print("TEEEEXT")
+        print(text[:600])
+        
+        if text and sentence_cleaned not in text:
+            return {"clean_link": url, "text_cleaned": text}
+        return {"clean_link": "", "text_cleaned": ""}
+    except Exception as e:
+        print(f"Error scraping {url} with requests: {e}")
+        return {"clean_link": "", "text_cleaned": ""}
 
 @app.route('/get_results')
 def get_results():
     global CUR_STREAM
 
     with CUR_STREAM['lock']:
+        # Cancel previous stream if any
         if CUR_STREAM['cancel_event'] is not None:
             CUR_STREAM['cancel_event'].set()
+
         cancel_event = threading.Event()
         CUR_STREAM['cancel_event'] = cancel_event
 
@@ -210,76 +112,92 @@ def get_results():
     sentence = request.args.get('sentence')
     starting_index = int(request.args.get('starting_index', 0))
     sentence_cleaned = " ".join(sentence.split())
+    
     use_lightweight = request.args.get('lightweight', 'true').lower() == 'true'
 
     def generate(cancel_event):
+        print("here")
         DRIVER = None
         try:
             DRIVER = create_driver()
-            DRIVER.set_page_load_timeout(5)  # Reduced timeout
+            DRIVER.set_page_load_timeout(15)  
             
-            # Faster Bing search
-            DRIVER.get("https://www.bing.com/search?q=" + query.replace(' ', '+'))
-            time.sleep(1)  # Reduced wait time
+            DRIVER.get("https://www.bing.com/")
 
-            # Skip cookie banners entirely or handle very quickly
+            time.sleep(2) 
+
+            print(DRIVER.page_source[:2000])
+
             try:
-                WebDriverWait(DRIVER, 0.5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject')]"))
-                ).click()
+                reject_btn = WebDriverWait(DRIVER, 1).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject') or contains(text(), 'Decline')]"))
+                )
+                reject_btn.click()
+                time.sleep(1) 
             except:
-                pass
+                pass 
 
-            # Get search results faster
+            search_box = DRIVER.find_element(By.NAME, "q")
+            search_box.send_keys(query)
+            search_box.send_keys(Keys.RETURN)
+            time.sleep(1) 
+
             results = DRIVER.find_elements(By.CSS_SELECTOR, "li.b_algo h2 a")
-            if not results:
-                # Fallback selector
-                results = DRIVER.find_elements(By.CSS_SELECTOR, "h2 a")
-            
+            print("RESULTS")
+            print(results)
             links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
+            links = [get_clean_bing_links(DRIVER, link) for link in links]
             
-            # Resolve links in parallel if using Selenium
-            if not use_lightweight:
-                links = resolve_bing_links_parallel(DRIVER, links)
-            
-            # Close driver if using lightweight mode
             if use_lightweight and DRIVER:
                 DRIVER.quit()
                 DRIVER = None
             
-            print(f"Processing {len(links)} links")
-            
-            if use_lightweight:
-                # Process all URLs in parallel for maximum speed
-                results = process_urls_parallel(links, sentence_cleaned)
-                for result in results:
-                    if cancel_event.is_set():
-                        break
-                    yield "data: " + json.dumps(result) + "\n\n"
-            else:
-                # Sequential processing for Selenium mode
-                for link in links:
-                    if cancel_event.is_set():
-                        break
-                    
-                    yield "data: PROCESSING\n\n"
-                    
-                    try:
-                        # Quick page load with minimal waiting
-                        DRIVER.get(link)
-                        
-                        # Skip cookie acceptance for speed
-                        text = extract_clean_text_fast(DRIVER, sentence_cleaned)
-                        
-                        result = {
-                            "clean_link": DRIVER.current_url if text else "",
-                            "text_cleaned": text
-                        }
-                        yield "data: " + json.dumps(result) + "\n\n"
-                        
-                    except Exception as e:
-                        print(f"Error processing {link}: {e}")
-                        yield "data: " + json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n\n"
+            print("LINKS")
+            print(links)
+            for link in links:
+                print("LINK")
+                print(link)
+
+                if cancel_event.is_set():
+                    break
+                
+                yield "data: PROCESSING\n\n"
+                
+                try:
+                    if use_lightweight:
+                        result = scrape_with_requests(link, sentence_cleaned)
+                        yield json.dumps(result) + "\n"
+                    else:
+                        if DRIVER:
+                            DRIVER.execute_script("window.localStorage.clear();")
+                            DRIVER.execute_script("window.sessionStorage.clear();")
+                            DRIVER.delete_all_cookies()
+                            
+                            DRIVER.get(link)
+                            time.sleep(1) 
+
+                            try:
+                                accept_btn = WebDriverWait(DRIVER, 2).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept all') or contains(text(), 'Accept')]"))
+                                )
+                                accept_btn.click()
+                                time.sleep(1)
+                            except:
+                                pass
+
+                            text = extract_clean_text(DRIVER)
+
+                            if text and sentence_cleaned not in text:
+                                yield json.dumps({"clean_link": DRIVER.current_url, "text_cleaned": text}) + "\n"
+                            else:
+                                yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+                
+                except TimeoutException:
+                    print(f"Timeout for {link}")
+                    yield json.dumps({"clean_link": "", "text_cleaned": "Page load timeout"}) + "\n"
+                except Exception as e:
+                    print(f"Error scraping {link}: {e}")
+                    yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
 
             yield "data: END\n\n"
 
@@ -291,7 +209,7 @@ def get_results():
                 DRIVER.quit()
 
     return Response(generate(cancel_event), mimetype='text/event-stream')
-
+    
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False) 
