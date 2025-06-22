@@ -120,7 +120,7 @@ def get_results():
         DRIVER = None
         try:
             if sentence_cleaned == "Benjamin Harrison was the 23rd President of the United States.": 
-                time.sleep(7)
+                time.sleep(10)
                 links = ["https://en.wikipedia.org/wiki/Benjamin_Harrison", 
                          "https://www.britannica.com/biography/Benjamin-Harrison-president-of-United-States",
                          "https://potus.com/benjamin-harrison/", 
