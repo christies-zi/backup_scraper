@@ -26,11 +26,7 @@ CUR_STREAM = {
 # Chrome setup with memory optimization
 def create_driver():
     chrome_options = webdriver.ChromeOptions()
-    # NOTE: binary_location should point to the Chromium browser, NOT chromedriver
-    # Remove or fix this line:
-    # chrome_options.binary_location = "/usr/lib/chromium-browser/chromedriver"
-    # Instead, if you want to specify chromium browser binary, it would be something like:
-    # chrome_options.binary_location = "/usr/bin/chromium-browser"
+    chrome_options.binary_location = "/usr/bin/chromium-browser"  # or /usr/bin/chromium if that's what you have
 
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
@@ -41,7 +37,6 @@ def create_driver():
     chrome_options.add_argument("--disable-plugins")
     chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     chrome_options.add_argument("--window-size=800x600")
-
     chrome_options.page_load_strategy = 'eager'
 
     service = Service('/usr/lib/chromium-browser/chromedriver')
