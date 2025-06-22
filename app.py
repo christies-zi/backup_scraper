@@ -14,6 +14,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+import concurrent.futures
+from urllib.parse import urljoin, urlparse
 
 
 app = Flask(__name__)
@@ -23,6 +25,12 @@ CUR_STREAM = {
     'cancel_event': None,
     'lock': threading.Lock()
 }
+
+# Reuse session for requests
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+})
 
 # Chrome setup with memory optimization
 def create_driver():
@@ -38,6 +46,10 @@ def create_driver():
     chrome_options.add_argument("--disable-plugins")
     chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     chrome_options.add_argument("--window-size=800x600")
+    chrome_options.add_argument("--disable-javascript")  # Disable JS for faster loading
+    chrome_options.add_argument("--disable-background-timer-throttling")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-renderer-backgrounding")
     chrome_options.page_load_strategy = 'eager'
 
     service = Service('/usr/lib/chromium-browser/chromedriver')
@@ -45,46 +57,65 @@ def create_driver():
     # Tell Selenium this is Chromium, not Chrome
     return webdriver.Chrome(service=service, options=chrome_options)
 
-def get_clean_bing_links(driver, link):
-    driver.execute_script("window.open(arguments[0]);", link)  # Open link in new tab
-    driver.switch_to.window(driver.window_handles[-1])  # Switch to new tab
-    time.sleep(3)  # Allow the redirect to complete
-    clean_link = driver.current_url  # Get final resolved URL
-    driver.close()  # Close the new tab
-    driver.switch_to.window(driver.window_handles[0])  # Switch back to main tab
-    return clean_link
+def get_clean_bing_links_batch(driver, links):
+    """Process multiple links more efficiently"""
+    clean_links = []
+    original_window = driver.current_window_handle
+    
+    for link in links:
+        try:
+            driver.execute_script("window.open(arguments[0]);", link)
+            driver.switch_to.window(driver.window_handles[-1])
+            time.sleep(1)  # Reduced from 3 seconds
+            clean_link = driver.current_url
+            driver.close()
+            clean_links.append(clean_link)
+        except Exception as e:
+            print(f"Error resolving link {link}: {e}")
+            clean_links.append(link)  # Fallback to original link
+        finally:
+            if len(driver.window_handles) > 1:
+                driver.switch_to.window(original_window)
+    
+    return clean_links
 
-
-# Faster text extraction
+# Faster text extraction with single query
 def extract_clean_text(driver):
-    elements = driver.find_elements(By.CSS_SELECTOR, "p, blockquote")
-    list_elements = driver.find_element(By.CSS_SELECTOR, "li")
-    combined = " ".join(el.text.strip() for el in elements + list_elements if el.text.strip())
-    return combined[:4000]  # Slice only once at the end
+    try:
+        # Single query for all elements
+        elements = driver.find_elements(By.CSS_SELECTOR, "p, blockquote, li")
+        combined = " ".join(el.text.strip() for el in elements if el.text.strip())
+        return combined[:4000]
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+        return ""
 
-# Lightweight alternative using BeautifulSoup
+# Optimized BeautifulSoup scraping
 def scrape_with_requests(url, sentence_cleaned):
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        response = session.get(url, timeout=5, stream=True)  # Reduced timeout, use streaming
         
-        # Extract text from relevant elements
-        paragraphs = soup.find_all(['p', 'blockquote']) 
-        less_important_stuff = soup.find_all(['li', 'blockquote'])
-        elements_split = []
-
-        for elem in paragraphs + less_important_stuff:
-            for br in elem.find_all("br"):
+        # Only read what we need
+        content = ""
+        for chunk in response.iter_content(chunk_size=8192, decode_unicode=True):
+            content += chunk
+            if len(content) > 50000:  # Stop reading after reasonable amount
+                break
+        
+        soup = BeautifulSoup(content, 'lxml')  # lxml is faster than html.parser
+        
+        # More efficient text extraction
+        text_elements = []
+        for tag in soup.find_all(['p', 'blockquote', 'li']):
+            # Replace <br> tags with newlines in one go
+            for br in tag.find_all("br"):
                 br.replace_with("\n")
             
-            lines = elem.text.split('\n')
-            clean_lines = '\n'.join([line.strip() for line in lines if line.strip()])
-            elements_split.append(clean_lines)
+            text = tag.get_text(separator='\n', strip=True)
+            if text:
+                text_elements.append(text)
 
-        text = '\n'.join([e.strip() for e in elements_split if e.strip()])[:4000]
+        text = '\n'.join(text_elements)[:4000]
 
         print("TEEEEXT")
         print(text[:600])
@@ -94,6 +125,23 @@ def scrape_with_requests(url, sentence_cleaned):
         return {"clean_link": "", "text_cleaned": ""}
     except Exception as e:
         print(f"Error scraping {url} with requests: {e}")
+        return {"clean_link": "", "text_cleaned": ""}
+
+def scrape_single_link(args):
+    """Helper function for parallel scraping"""
+    link, sentence_cleaned, use_lightweight, cancel_event = args
+    
+    if cancel_event.is_set():
+        return {"clean_link": "", "text_cleaned": ""}
+    
+    try:
+        if use_lightweight:
+            return scrape_with_requests(link, sentence_cleaned)
+        else:
+            # For selenium mode, we'll still process sequentially to avoid driver conflicts
+            return {"clean_link": link, "text_cleaned": "selenium_fallback"}
+    except Exception as e:
+        print(f"Error scraping {link}: {e}")
         return {"clean_link": "", "text_cleaned": ""}
 
 @app.route('/get_results')
@@ -120,68 +168,98 @@ def get_results():
         DRIVER = None
         try:
             DRIVER = create_driver()
-            DRIVER.set_page_load_timeout(15)  
+            DRIVER.set_page_load_timeout(10)  # Reduced from 15
             
             DRIVER.get("https://www.bing.com/")
-
-            time.sleep(2) 
+            time.sleep(1)  # Reduced wait time
 
             print(DRIVER.page_source[:2000])
 
+            # Faster cookie/popup handling
             try:
-                reject_btn = WebDriverWait(DRIVER, 1).until(
+                reject_btn = WebDriverWait(DRIVER, 0.5).until(  # Reduced wait time
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject') or contains(text(), 'Decline')]"))
                 )
                 reject_btn.click()
-                time.sleep(1) 
+                time.sleep(0.5)  # Reduced wait time
             except:
                 pass 
 
             search_box = DRIVER.find_element(By.NAME, "q")
+            search_box.clear()
             search_box.send_keys(query)
             search_box.send_keys(Keys.RETURN)
-            time.sleep(1) 
+            time.sleep(0.5)  # Reduced wait time
+
+            # Wait for results to load
+            WebDriverWait(DRIVER, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li.b_algo h2 a"))
+            )
 
             results = DRIVER.find_elements(By.CSS_SELECTOR, "li.b_algo h2 a")
             print("RESULTS")
             print(results)
-            links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
-            links = [get_clean_bing_links(DRIVER, link) for link in links]
             
-            if use_lightweight and DRIVER:
-                DRIVER.quit()
-                DRIVER = None
+            raw_links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
+            links = get_clean_bing_links_batch(DRIVER, raw_links)  # Batch processing
             
             print("LINKS")
             print(links)
-            for link in links:
-                print("LINK")
-                print(link)
+            
+            if use_lightweight:
+                # Parallel processing for lightweight mode
+                if DRIVER:
+                    DRIVER.quit()
+                    DRIVER = None
+                
+                # Process links in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    scrape_args = [(link, sentence_cleaned, use_lightweight, cancel_event) for link in links]
+                    future_to_link = {executor.submit(scrape_single_link, args): args[0] for args in scrape_args}
+                    
+                    for future in concurrent.futures.as_completed(future_to_link):
+                        if cancel_event.is_set():
+                            break
+                        
+                        link = future_to_link[future]
+                        yield "data: PROCESSING\n\n"
+                        
+                        try:
+                            result = future.result(timeout=10)
+                            yield json.dumps(result) + "\n"
+                        except Exception as e:
+                            print(f"Error processing {link}: {e}")
+                            yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+            else:
+                # Sequential processing for selenium mode (to avoid driver conflicts)
+                for link in links:
+                    print("LINK")
+                    print(link)
 
-                if cancel_event.is_set():
-                    break
-                
-                yield "data: PROCESSING\n\n"
-                
-                try:
-                    if use_lightweight:
-                        result = scrape_with_requests(link, sentence_cleaned)
-                        yield json.dumps(result) + "\n"
-                    else:
+                    if cancel_event.is_set():
+                        break
+                    
+                    yield "data: PROCESSING\n\n"
+                    
+                    try:
                         if DRIVER:
-                            DRIVER.execute_script("window.localStorage.clear();")
-                            DRIVER.execute_script("window.sessionStorage.clear();")
+                            # Clear cache more efficiently
+                            DRIVER.execute_script("""
+                                window.localStorage.clear();
+                                window.sessionStorage.clear();
+                            """)
                             DRIVER.delete_all_cookies()
                             
                             DRIVER.get(link)
-                            time.sleep(1) 
+                            time.sleep(0.5)  # Reduced wait time
 
+                            # Faster popup handling
                             try:
-                                accept_btn = WebDriverWait(DRIVER, 2).until(
+                                accept_btn = WebDriverWait(DRIVER, 1).until(  # Reduced wait time
                                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept all') or contains(text(), 'Accept')]"))
                                 )
                                 accept_btn.click()
-                                time.sleep(1)
+                                time.sleep(0.5)  # Reduced wait time
                             except:
                                 pass
 
@@ -192,12 +270,12 @@ def get_results():
                             else:
                                 yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
                 
-                except TimeoutException:
-                    print(f"Timeout for {link}")
-                    yield json.dumps({"clean_link": "", "text_cleaned": "Page load timeout"}) + "\n"
-                except Exception as e:
-                    print(f"Error scraping {link}: {e}")
-                    yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+                    except TimeoutException:
+                        print(f"Timeout for {link}")
+                        yield json.dumps({"clean_link": "", "text_cleaned": "Page load timeout"}) + "\n"
+                    except Exception as e:
+                        print(f"Error scraping {link}: {e}")
+                        yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
 
             yield "data: END\n\n"
 
@@ -212,4 +290,4 @@ def get_results():
     
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False) 
+    app.run(host='0.0.0.0', port=port, debug=False)
