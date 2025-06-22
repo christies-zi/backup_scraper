@@ -309,11 +309,6 @@ def get_results():
 
     return Response(generate(), mimetype='text/event-stream')
 
-# Initialize driver pool when app starts
-@app.before_first_request
-def startup():
-    initialize_driver_pool()
-
 # Register cleanup function
 atexit.register(cleanup_drivers)
 
