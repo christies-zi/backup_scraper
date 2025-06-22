@@ -28,13 +28,18 @@ def create_driver():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
-    # Memory optimization options
-    chrome_options.add_argument("--js-flags=--max_old_space_size=100")  # Limit JS memory
+    chrome_options.add_argument("--js-flags=--max_old_space_size=100")
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-plugins")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # Disable images
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     chrome_options.add_argument("--window-size=800x600")
-    chrome_options.page_load_strategy = 'eager'  # Don't wait for all resources
+
+    # Force English
+    chrome_options.add_argument("--lang=en-US")
+    chrome_prefs = {"intl.accept_languages": "en,en_US"}
+    chrome_options.experimental_options["prefs"] = chrome_prefs
+
+    chrome_options.page_load_strategy = 'eager'
     return webdriver.Chrome(options=chrome_options)
 
 # Faster text extraction
