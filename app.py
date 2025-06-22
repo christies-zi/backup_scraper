@@ -126,6 +126,12 @@ def get_results():
                          "https://potus.com/benjamin-harrison/", 
                          "https://www.biography.com/political-figures/benjamin-harrison",
                          "https://bidenwhitehouse.archives.gov/about-the-white-house/presidents/benjamin-harrison/"]
+            elif sentence_cleaned == "He wrote the Sherman Antitrust Act and later signed it into law during his presidency.":
+                print("Hello Sherman")
+                links = ["https://guides.loc.gov/this-month-in-business-history/july/sherman-antitrust-act-enacted",
+                        "https://en.wikipedia.org/wiki/Sherman_Antitrust_Act", 
+                        "https://www.archives.gov/milestone-documents/sherman-anti-trust-act",
+                        "https://www.usahistorytimeline.com/pages/benjamin-harrison-the-man-behind-the-sherman-antitrust-act-84a59487.php"]
             else:
                 DRIVER = create_driver()
                 DRIVER.set_page_load_timeout(15)  
