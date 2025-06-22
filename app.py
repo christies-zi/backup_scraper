@@ -19,10 +19,12 @@ from selenium.webdriver.chrome.options import Options
 app = Flask(__name__)
 CORS(app, resources={r"/get_results": {"origins": "*"}})
 
-CUR_STREAM = {
-    'cancel_event': None,
-    'lock': threading.Lock()
-}
+# Semaphore to limit concurrent requests to 5
+REQUEST_SEMAPHORE = threading.Semaphore(5)
+
+# Dictionary to track active streams by thread ID
+ACTIVE_STREAMS = {}
+STREAMS_LOCK = threading.Lock()
 
 # Chrome setup with memory optimization
 def create_driver():
@@ -98,16 +100,6 @@ def scrape_with_requests(url, sentence_cleaned):
 
 @app.route('/get_results')
 def get_results():
-    global CUR_STREAM
-
-    with CUR_STREAM['lock']:
-        # Cancel previous stream if any
-        if CUR_STREAM['cancel_event'] is not None:
-            CUR_STREAM['cancel_event'].set()
-
-        cancel_event = threading.Event()
-        CUR_STREAM['cancel_event'] = cancel_event
-
     query = request.args.get('query')
     sentence = request.args.get('sentence')
     starting_index = int(request.args.get('starting_index', 0))
@@ -115,101 +107,118 @@ def get_results():
     
     use_lightweight = request.args.get('lightweight', 'true').lower() == 'true'
 
-    def generate(cancel_event):
-        print("here")
-        DRIVER = None
+    def generate():
+        thread_id = threading.get_ident()
+        cancel_event = threading.Event()
+        
+        # Register this stream
+        with STREAMS_LOCK:
+            ACTIVE_STREAMS[thread_id] = cancel_event
+        
+        # Acquire semaphore to limit concurrent requests
+        REQUEST_SEMAPHORE.acquire()
+        
         try:
-            DRIVER = create_driver()
-            DRIVER.set_page_load_timeout(15)  
-            
-            DRIVER.get("https://www.bing.com/")
-
-            time.sleep(2) 
-
-            print(DRIVER.page_source[:2000])
-
+            print("here")
+            DRIVER = None
             try:
-                reject_btn = WebDriverWait(DRIVER, 1).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject') or contains(text(), 'Decline')]"))
-                )
-                reject_btn.click()
-                time.sleep(1) 
-            except:
-                pass 
-
-            search_box = DRIVER.find_element(By.NAME, "q")
-            search_box.send_keys(query)
-            search_box.send_keys(Keys.RETURN)
-            time.sleep(1) 
-
-            results = DRIVER.find_elements(By.CSS_SELECTOR, "li.b_algo h2 a")
-            print("RESULTS")
-            print(results)
-            links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
-            links = [get_clean_bing_links(DRIVER, link) for link in links]
-            
-            if use_lightweight and DRIVER:
-                DRIVER.quit()
-                DRIVER = None
-            
-            print("LINKS")
-            print(links)
-            for link in links:
-                print("LINK")
-                print(link)
-
-                if cancel_event.is_set():
-                    break
+                DRIVER = create_driver()
+                DRIVER.set_page_load_timeout(15)  
                 
-                yield "data: PROCESSING\n\n"
-                
+                DRIVER.get("https://www.bing.com/")
+
+                time.sleep(2) 
+
+                print(DRIVER.page_source[:2000])
+
                 try:
-                    if use_lightweight:
-                        result = scrape_with_requests(link, sentence_cleaned)
-                        yield json.dumps(result) + "\n"
-                    else:
-                        if DRIVER:
-                            DRIVER.execute_script("window.localStorage.clear();")
-                            DRIVER.execute_script("window.sessionStorage.clear();")
-                            DRIVER.delete_all_cookies()
-                            
-                            DRIVER.get(link)
-                            time.sleep(1) 
+                    reject_btn = WebDriverWait(DRIVER, 1).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject') or contains(text(), 'Decline')]"))
+                    )
+                    reject_btn.click()
+                    time.sleep(1) 
+                except:
+                    pass 
 
-                            try:
-                                accept_btn = WebDriverWait(DRIVER, 2).until(
-                                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept all') or contains(text(), 'Accept')]"))
-                                )
-                                accept_btn.click()
-                                time.sleep(1)
-                            except:
-                                pass
+                search_box = DRIVER.find_element(By.NAME, "q")
+                search_box.send_keys(query)
+                search_box.send_keys(Keys.RETURN)
+                time.sleep(1) 
 
-                            text = extract_clean_text(DRIVER)
-
-                            if text and sentence_cleaned not in text:
-                                yield json.dumps({"clean_link": DRIVER.current_url, "text_cleaned": text}) + "\n"
-                            else:
-                                yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+                results = DRIVER.find_elements(By.CSS_SELECTOR, "li.b_algo h2 a")
+                print("RESULTS")
+                print(results)
+                links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
+                links = [get_clean_bing_links(DRIVER, link) for link in links]
                 
-                except TimeoutException:
-                    print(f"Timeout for {link}")
-                    yield json.dumps({"clean_link": "", "text_cleaned": "Page load timeout"}) + "\n"
-                except Exception as e:
-                    print(f"Error scraping {link}: {e}")
-                    yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+                if use_lightweight and DRIVER:
+                    DRIVER.quit()
+                    DRIVER = None
+                
+                print("LINKS")
+                print(links)
+                for link in links:
+                    print("LINK")
+                    print(link)
 
-            yield "data: END\n\n"
+                    if cancel_event.is_set():
+                        break
+                    
+                    yield "data: PROCESSING\n\n"
+                    
+                    try:
+                        if use_lightweight:
+                            result = scrape_with_requests(link, sentence_cleaned)
+                            yield json.dumps(result) + "\n"
+                        else:
+                            if DRIVER:
+                                DRIVER.execute_script("window.localStorage.clear();")
+                                DRIVER.execute_script("window.sessionStorage.clear();")
+                                DRIVER.delete_all_cookies()
+                                
+                                DRIVER.get(link)
+                                time.sleep(1) 
 
-        except Exception as e:
-            print(f"Fatal error: {e}")
-            yield "data: ERROR\n\n"
+                                try:
+                                    accept_btn = WebDriverWait(DRIVER, 2).until(
+                                        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept all') or contains(text(), 'Accept')]"))
+                                    )
+                                    accept_btn.click()
+                                    time.sleep(1)
+                                except:
+                                    pass
+
+                                text = extract_clean_text(DRIVER)
+
+                                if text and sentence_cleaned not in text:
+                                    yield json.dumps({"clean_link": DRIVER.current_url, "text_cleaned": text}) + "\n"
+                                else:
+                                    yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+                    
+                    except TimeoutException:
+                        print(f"Timeout for {link}")
+                        yield json.dumps({"clean_link": "", "text_cleaned": "Page load timeout"}) + "\n"
+                    except Exception as e:
+                        print(f"Error scraping {link}: {e}")
+                        yield json.dumps({"clean_link": "", "text_cleaned": ""}) + "\n"
+
+                yield "data: END\n\n"
+
+            except Exception as e:
+                print(f"Fatal error: {e}")
+                yield "data: ERROR\n\n"
+            finally:
+                if DRIVER:
+                    DRIVER.quit()
+        
         finally:
-            if DRIVER:
-                DRIVER.quit()
+            # Clean up: remove from active streams and release semaphore
+            with STREAMS_LOCK:
+                ACTIVE_STREAMS.pop(thread_id, None)
+            REQUEST_SEMAPHORE.release()
 
-    return Response(generate(cancel_event), mimetype='text/event-stream')
+    return Response(generate(), mimetype='text/event-stream')
     
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False) 
+    app.run(host='0.0.0.0', port=port, debug=False)
