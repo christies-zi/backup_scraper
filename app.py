@@ -24,7 +24,7 @@ CUR_STREAM = {
 # Chrome setup with memory optimization
 def create_driver():
     chrome_options = webdriver.ChromeOptions()
-    chrome_options.binary_location = "/usr/bin/chromedriver-linux64"
+    chrome_options.binary_location = "/usr/lib/chromium-browser/chromedriver"
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
