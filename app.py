@@ -36,7 +36,7 @@ def create_driver():
     chrome_options.add_argument("--window-size=800x600")
 
     chrome_options.page_load_strategy = 'eager'
-    return webdriver.Chrome(options=chrome_options)
+    return webdriver.Chrome(options=chrome_options, executable_path='/usr/lib/chromium-browser/chromedriver')
 
 # Faster text extraction
 def extract_clean_text(driver):
