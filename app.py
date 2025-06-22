@@ -45,6 +45,16 @@ def create_driver():
     # Tell Selenium this is Chromium, not Chrome
     return webdriver.Chrome(service=service, options=chrome_options)
 
+def get_clean_bing_links(driver, link):
+    driver.execute_script("window.open(arguments[0]);", link)  # Open link in new tab
+    driver.switch_to.window(driver.window_handles[-1])  # Switch to new tab
+    time.sleep(3)  # Allow the redirect to complete
+    clean_link = driver.current_url  # Get final resolved URL
+    driver.close()  # Close the new tab
+    driver.switch_to.window(driver.window_handles[0])  # Switch back to main tab
+    return clean_link
+
+
 # Faster text extraction
 def extract_clean_text(driver):
     elements = driver.find_elements(By.CSS_SELECTOR, "p, blockquote")
@@ -77,8 +87,7 @@ def scrape_with_requests(url, sentence_cleaned):
         text = '\n'.join([e.strip() for e in elements_split if e.strip()])[:4000]
 
         print("TEEEEXT")
-
-        print("aaaaaa")
+        print(text[:600])
         
         if text and sentence_cleaned not in text:
             return {"clean_link": url, "text_cleaned": text}
@@ -115,12 +124,12 @@ def get_results():
             
             DRIVER.get("https://www.bing.com/")
 
-            time.sleep(3) 
+            time.sleep(2) 
 
             print(DRIVER.page_source[:2000])
 
             try:
-                reject_btn = WebDriverWait(DRIVER, 2).until(
+                reject_btn = WebDriverWait(DRIVER, 1).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Reject') or contains(text(), 'Decline')]"))
                 )
                 reject_btn.click()
@@ -131,12 +140,13 @@ def get_results():
             search_box = DRIVER.find_element(By.NAME, "q")
             search_box.send_keys(query)
             search_box.send_keys(Keys.RETURN)
-            time.sleep(2) 
+            time.sleep(1) 
 
             results = DRIVER.find_elements(By.CSS_SELECTOR, "li.b_algo h2 a")
             print("RESULTS")
             print(results)
             links = [el.get_attribute("href") for el in results[starting_index:starting_index + 5]]
+            links = [get_clean_bing_links(DRIVER, link) for link in links]
             
             if use_lightweight and DRIVER:
                 DRIVER.quit()
@@ -164,7 +174,7 @@ def get_results():
                             DRIVER.delete_all_cookies()
                             
                             DRIVER.get(link)
-                            time.sleep(2) 
+                            time.sleep(1) 
 
                             try:
                                 accept_btn = WebDriverWait(DRIVER, 2).until(
@@ -199,7 +209,7 @@ def get_results():
                 DRIVER.quit()
 
     return Response(generate(cancel_event), mimetype='text/event-stream')
-
+    
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False) 
