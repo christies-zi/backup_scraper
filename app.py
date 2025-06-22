@@ -28,6 +28,7 @@ MAX_DRIVER_USAGE = 50  # Restart driver after this many uses to prevent memory l
 DRIVER_POOL = queue.Queue(maxsize=POOL_SIZE)
 DRIVER_USAGE_COUNT = {}
 POOL_LOCK = threading.Lock()
+POOL_INITIALIZED = False  # Add this flag
 
 # Semaphore to limit concurrent requests
 REQUEST_SEMAPHORE = threading.Semaphore(5)
@@ -69,16 +70,25 @@ def create_driver():
 
 def initialize_driver_pool():
     """Initialize the driver pool at app startup"""
-    print("Initializing driver pool...")
-    for i in range(POOL_SIZE):
-        try:
-            driver = create_driver()
-            wrapper = DriverWrapper(driver, f"driver_{i}")
-            DRIVER_POOL.put(wrapper)
-            DRIVER_USAGE_COUNT[wrapper.driver_id] = 0
-            print(f"Driver {i+1}/{POOL_SIZE} initialized")
-        except Exception as e:
-            print(f"Failed to initialize driver {i}: {e}")
+    global POOL_INITIALIZED
+    
+    with POOL_LOCK:
+        if POOL_INITIALIZED:
+            return  # Already initialized
+        
+        print("Initializing driver pool...")
+        for i in range(POOL_SIZE):
+            try:
+                driver = create_driver()
+                wrapper = DriverWrapper(driver, f"driver_{i}")
+                DRIVER_POOL.put(wrapper)
+                DRIVER_USAGE_COUNT[wrapper.driver_id] = 0
+                print(f"Driver {i+1}/{POOL_SIZE} initialized")
+            except Exception as e:
+                print(f"Failed to initialize driver {i}: {e}")
+        
+        POOL_INITIALIZED = True
+        print("Driver pool initialization complete")
 
 def get_driver():
     """Get a driver from the pool"""
@@ -193,6 +203,10 @@ def scrape_with_requests(url, sentence_cleaned):
 
 @app.route('/get_results')
 def get_results():
+    # Initialize pool if not already done (lazy initialization)
+    if not POOL_INITIALIZED:
+        initialize_driver_pool()
+    
     query = request.args.get('query')
     sentence = request.args.get('sentence')
     starting_index = int(request.args.get('starting_index', 0))
@@ -312,13 +326,13 @@ def get_results():
 # Register cleanup function
 atexit.register(cleanup_drivers)
 
-@app.before_request
-def start_background_threads():
-    initialize_driver_pool() 
-    print("INITIALISED")
+# Health check endpoint
+@app.route('/health')
+def health_check():
+    return {"status": "ok", "pool_initialized": POOL_INITIALIZED}
 
 if __name__ == '__main__':
     # Initialize pool before starting the server
-    
+    initialize_driver_pool()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
