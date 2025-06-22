@@ -26,8 +26,6 @@ REQUEST_SEMAPHORE = threading.Semaphore(5)
 ACTIVE_STREAMS = {}
 STREAMS_LOCK = threading.Lock() 
 
-DRIVER_PRESTART = create_driver()
-
 # Chrome setup with memory optimization
 def create_driver():
     chrome_options = Options()
@@ -48,6 +46,8 @@ def create_driver():
 
     # Tell Selenium this is Chromium, not Chrome
     return webdriver.Chrome(service=service, options=chrome_options)
+
+DRIVER_PRESTART = create_driver()
 
 def get_clean_bing_links(driver, link):
     driver.execute_script("window.open(arguments[0]);", link)  # Open link in new tab
