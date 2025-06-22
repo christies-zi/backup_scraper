@@ -24,7 +24,9 @@ REQUEST_SEMAPHORE = threading.Semaphore(5)
 
 # Dictionary to track active streams by thread ID
 ACTIVE_STREAMS = {}
-STREAMS_LOCK = threading.Lock()
+STREAMS_LOCK = threading.Lock() 
+
+DRIVER_PRESTART = create_driver()
 
 # Chrome setup with memory optimization
 def create_driver():
@@ -122,12 +124,12 @@ def get_results():
             print("here")
             DRIVER = None
             try:
-                DRIVER = create_driver()
+                DRIVER = DRIVER_PRESTART
                 DRIVER.set_page_load_timeout(15)  
                 
                 DRIVER.get("https://www.bing.com/")
 
-                time.sleep(2) 
+                time.sleep(1) 
 
                 print(DRIVER.page_source[:2000])
 
