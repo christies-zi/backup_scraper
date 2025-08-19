@@ -226,5 +226,6 @@ def get_results():
     return Response(generate(cancel_event), mimetype='text/event-stream')
     
 if __name__ == '__main__':
+    print("starting")
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False) 
